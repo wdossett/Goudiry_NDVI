@@ -17,7 +17,7 @@ from rasterio.fill import fillnodata
 # Paths
 raster_folder = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\2nd Data DL USGS EE"  # Folder containing rasters
 vector_path = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\Goudiry_dept_GeoSen.shp"       # Path to the vector file
-output_folder = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\1st Data DL USGS EE - clipped"       # Folder to save clipped rasters
+output_folder = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\Data DL USGS EE - clipped"       # Folder to save clipped rasters
 
 # Load the vector polygon
 vector_data = gpd.read_file(vector_path)
@@ -152,7 +152,7 @@ def clip_cloud_cover(ndvi_ID, ndvi_dict, QA_folder):
 
 
 # Define the folders containing your files
-folder_path = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\1st data DL USGS EE - clipped"
+folder_path = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\Data DL USGS EE - clipped"
 QA_folder_path = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\Cloud QA clipped"
 
 # Find all files with 'B4' and 'B5' in their names - red and NIR bands
@@ -234,10 +234,8 @@ for key, value in ndvi_results.items():
 
 #endregion
 
-
-#region align extent of NDVI rasters
-
-#region start by creating an empty raster w/ the extent of the clip vector
+#align raster extents
+#region create an empty raster w/ the extent of the clip vector
 #get vector to create empty raster 
 vector = gpd.read_file(vector_path)
 bounds = vector.total_bounds  # Get extent [minx, miny, maxx, maxy]
@@ -269,35 +267,18 @@ meta = {
     'transform': transform
 }
 
-#create empty raster
-
-'''#in memory
-
-empty_raster = {
-    'data': np.full((height, width), np.nan, dtype='float32'), 
-    'metadata': meta
-}'''
-
-#in a file location
+#create empty raster in a file location
 empty_data = np.full((height, width), np.nan, dtype='float32')
 
 with rasterio.open(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\Goudiry_empty.TIF", "w", **meta) as dest:
     dest.write(np.where(np.isnan(empty_data), meta["nodata"], empty_data), 1)
+empty_raster_path = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\Goudiry_empty.TIF"
 
 #endregion
 
-#EXAMPLE
-meta = ndvi_cloudless['metadata']
-ndvi_test_data = ndvi_cloudless['data']
-with rasterio.open(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\ndvi_test.TIF", "w", **meta) as dest:
-    dest.write(np.where(np.isnan(ndvi_test_data), meta["nodata"], ndvi_test_data), 1)
-
-empty_raster_path = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\Goudiry_empty.TIF"
-input_raster_path = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\ndvi_test.TIF"
-output_path = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\test_output.TIF"
-
+#region stack empty and NDVI rasters
 #func to stack NDVI rasters on top of the empty raster so that each NDVI raster has the same extent
-def add_raster_to_empty(empty_raster_path, input_raster_path, output_path):
+def add_raster_to_empty(empty_raster_path, input_raster_path, output_path, raster_id):
     """
     Overlay a raster onto an empty raster with matching extent and resolution.
     
@@ -328,148 +309,99 @@ def add_raster_to_empty(empty_raster_path, input_raster_path, output_path):
             "nodata": -9999
         })
 
-        with rasterio.open(output_path, "w", **output_meta) as dest:
+        with rasterio.open(f'{output_path}\{raster_id}_cloudlessNDVI.TIF', "w", **output_meta) as dest:
             dest.write(np.where(np.isnan(mean_stack), output_meta["nodata"], mean_stack), 1)
     
     
-    
-    ''' in memory
-    # Extract data and metadata from the dictionaries
-    empty_data = empty_raster['data']
-    empty_meta = empty_raster['metadata']
+#set variables
+input_raster_path = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\ndvi_result_forprocessing.TIF"
+output_path = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\NDVI wo clouds"
+counter = 0
 
-    ndvi_data = input_raster['data']
-    ndvi_meta = input_raster['metadata']
-    
-
-    # Create an aligned NDVI raster to match the empty raster
-    aligned_ndvi = np.full_like(empty_data, np.nan, dtype='float32')  # Initialize with NaN
-
-    # Reproject NDVI to match the empty raster's extent and transform
-    reproject(
-        source=ndvi_data,
-        destination=aligned_ndvi,
-        src_transform=ndvi_meta['transform'],
-        src_crs=ndvi_meta['crs'],
-        dst_transform=empty_meta['transform'],
-        dst_crs=empty_meta['crs'],
-        resampling=Resampling.nearest  # Choose resampling method
-    )
-
-    # Stack the empty raster and the aligned NDVI raster
-    stacked_rasters = np.stack([empty_data, aligned_ndvi], axis=0)
-
-    print("Stacked raster shape:", stacked_rasters.shape)
-        
-
-    with MemoryFile() as memfile:
-        with memfile.open(**empty_raster['metadata']) as dst: #store the empty raster in memory
-            dst.write(empty_raster['data'], 1) #write empty raster data
-            
-        # Use the memory file
-        with memfile.open() as src:
-            data = src.read(1)  # Read the first band
-            print(data)
-        
-        # Calculate window of overlap
-        window = rasterio.windows.from_bounds(
-            *src.bounds, transform=empty_src.transform, width=empty_meta['width'], height=empty_meta['height']
-        )
-        
-        # Insert input data into the empty raster
-        window = window.round_offsets()
-        empty_data[window.row_off:window.row_off + window.height, window.col_off:window.col_off + window.width] = input_data
-
-        # Save the combined raster
-        with rasterio.open(output_path, 'w', **empty_meta) as dst:
-            dst.write(empty_data, 1)
-    '''
-
-#define empty raster pat
+#iterate through the NDVI rasters to make them each the right extent
 for result, data in ndvi_results.items():
-    #write the result to a raster so we can use rasterio on it
+    #write the NDVI raster to a raster file so we can use rasterio on it
     meta = data['metadata']
     ndvi_processing_data = data['data']
     
     with rasterio.open(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\ndvi_result_forprocessing.TIF", "w", **meta) as dest:
         dest.write(np.where(np.isnan(ndvi_processing_data), meta["nodata"], ndvi_processing_data), 1)
     
+    #run the function
+    add_raster_to_empty(empty_raster_path, input_raster_path, output_path, result)
     
-    
-# Example usage
-vector_path = "path/to/vector.shp"
-empty_raster_path = "path/to/empty_raster.tif"
-input_raster_path = "path/to/raster.tif"
-output_path = "path/to/output_raster.tif"
+    counter =+ 1
 
-
-
-# Overlay a raster onto the empty raster
-add_raster_to_empty(empty_raster_path, input_raster_path, output_path)
+print(f'{counter} NDVI raster extents modified')
 
 #endregion
 
+
 #region avg by month
 
-def get_monthly_ndvi(input_dict, output_folder):
+#define func to average all the NDVI rasters in the same month
+def get_monthly_ndvi(input_folder_path, output_folder):
     """
     Calculate monthly average NDVI from daily NDVI rasters.
 
     Parameters:
-        input_dict (dict): Dictionary of dictionary containing NDVI rasters.
+        input_folder_path (str): Path to folder containing NDVI raster files.
         output_folder (str): Path to save the monthly average NDVI rasters.
     """
     # Ensure output folder exists
     os.makedirs(output_folder, exist_ok=True)
 
+    #list raster files in input folder
+    raster_files = [f for f in os.listdir(input_folder_path) if f.endswith('.TIF')]
+
     # Group rasters by month
     rasters_by_month = defaultdict(list) 
-    for id, result in input_dict.items():
-        # Example assumes filenames like "ndvi_LC08_L2SP_202050_20240706_20240712_02_T1_SR"
-        month = id.split('_')[4][:6]  # Extract YYYYMM
-        rasters_by_month[month].append(result)
+    for file in raster_files:
+        # Assumes filenames like "LC08_L2SP_202050_20240706_20240712_02_T1_cloudlessNDVI.TIF"
+        month = file.split('_')[3][:6]  # Extract YYYYMM
+
+        rasters_by_month[month].append(file)
 
     # Process each month
-    for month, raster_ids in rasters_by_month.items():
-        print(f"Processing month: {month}")
+    for month, files in rasters_by_month.items():
         
-        # Read and stack NDVI rasters for the month
-        ndvi_stack = []
-        meta = None
+        rasters = []
         
-        # Iterate over key-value pairs in rasters_by_month
-        for month, ndvi_data_dict_list in rasters_by_month.items():
-            for ndvi_data_dict in ndvi_data_dict_list:  # Now iterating through the list of dictionaries for each month
-                ndvi_stack.append(ndvi_data_dict['data'].astype('float32'))
-                
-                # Set metadata for the first NDVI data dictionary
-                if meta is None:
-                    meta = ndvi_data_dict['metadata']
+        for file in files:
+            raster_path = os.path.join(input_folder_path, file)
+            with rasterio.open(raster_path) as src:
+                data = src.read(1)
+                nodata_value = src.nodata if src.nodata else -9999
+                data = np.where(data == nodata_value, np.nan, data)  # Mask null values
+                rasters.append(data)
 
-        # Convert to 3D NumPy array (time, rows, cols)
-        ndvi_stack = np.stack(ndvi_stack)
+        # Stack and compute the mean ignoring NaN values
+        stacked_rasters = np.array(rasters)
+        monthly_mean = np.nanmean(stacked_rasters, axis=0)
+
+        # Save the averaged raster for the month
+        output_filename = os.path.join(output_folder, f"NDVI_avg_{month}.TIF")
+        with rasterio.open(raster_path) as src:
+            output_meta = src.meta.copy()
+            output_meta.update({
+                "driver": "GTiff",
+                "height": monthly_mean.shape[0],
+                "width": monthly_mean.shape[1],
+                "nodata": -9999
+            })
         
-        #MAKE ALL THE STACKS HAVE THE SAME SHAPE, OR GET AROUND IT 
+        # Save the averaged raster
+        with rasterio.open(output_filename, 'w', **output_meta) as dst:
+            dst.write(np.where(np.isnan(monthly_mean), -9999, monthly_mean), 1)
 
-        # Compute pixel-wise mean
-        monthly_mean = np.mean(ndvi_stack, axis=0)
-
-        # Update metadata for the output raster
-        meta.update(dtype='float32', count=1)
-
-        # Save the monthly average NDVI raster
-        output_path = os.path.join(output_folder, f"monthly_avg_ndvi_{month}.tif")
-        with rasterio.open(output_path, 'w', **meta) as dst:
-            dst.write(monthly_mean, 1)
-
-        print(f"Saved monthly average NDVI to {output_path}")
+        print(f"{month} processed")
 
 # Input and output paths
-input_folder = 'path/to/ndvi_rasters'
-output_folder = 'path/to/output_folder'
+input_folder_path = output_path
+output_folder = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\NDVI monthly averages"
 
 # Run the processing
-get_monthly_ndvi(input_folder, output_folder)
+get_monthly_ndvi(input_folder_path, output_folder)
 
 #endregion
 
