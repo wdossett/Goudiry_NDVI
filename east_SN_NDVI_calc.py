@@ -12,6 +12,10 @@ import glob
 from rasterio.merge import merge
 from rasterio.warp import reproject, Resampling
 from rasterio.fill import fillnodata
+from scipy.spatial import cKDTree
+from rasterstats import zonal_stats
+import pandas as pd
+
 
 #region Clip Rasters
 
@@ -409,3 +413,104 @@ output_folder = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\ND
 get_monthly_ndvi(input_folder_path, output_folder)
 
 #endregion
+
+
+
+# distance to nearest village
+
+#region create distance raster
+# Load the vector file (villages)
+villages = gpd.read_file(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\Goudiry_villages.shp")
+
+# Load the blank raster file to use as template
+raster = rasterio.open(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\Goudiry_empty.TIF")
+
+# Reproject villages to match raster CRS
+villages = villages.to_crs(raster.crs)
+
+# Extract village coordinates
+village_coords = [(x, y) for x, y in zip(villages.geometry.x, villages.geometry.y)]
+
+# Create a grid of pixel center coordinates
+rows, cols = np.indices((raster.height, raster.width))
+x, y = raster.xy(rows.flatten(), cols.flatten())
+pixel_coords = np.column_stack([x, y])
+
+# Use KDTree for fast nearest-neighbor search
+tree = cKDTree(village_coords)
+distances, _ = tree.query(pixel_coords)
+
+# Reshape the distances to match the raster shape
+distance_raster = distances.reshape(raster.height, raster.width)
+
+# Save the distance raster
+output_file = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\distance_raster.TIF"
+transform = raster.transform
+
+with rasterio.open(
+    output_file,
+    'w',
+    driver='GTiff',
+    height=distance_raster.shape[0],
+    width=distance_raster.shape[1],
+    count=1,
+    dtype=distance_raster.dtype,
+    crs=raster.crs,
+    transform=transform,
+) as dst:
+    dst.write(distance_raster, 1)
+#endregion
+
+# use QGIS to reclassify the raster into categories, transform into a polygon vector
+dist_vector = gpd.read_file(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\distance_vector_zones_clipped.shp")
+
+
+#region perform zonal statistics
+
+# Path to rasters
+raster_files = glob.glob(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\NDVI monthly averages\*.TIF")
+
+# Initialize an empty DataFrame for results
+all_results = dist_vector.copy()
+all_results = all_results.sort_values(by = 'max_dist').reset_index(drop = True)
+all_results = all_results.drop(columns = 'geometry')
+results_min = all_results.copy()
+results_max = all_results.copy()
+results_mean = all_results.copy()
+results_std = all_results.copy()
+
+
+for raster_file in raster_files:
+    # Extract raster name for column labeling
+    raster_name = raster_file[-10:].replace(".TIF", "")
+    
+    # Calculate zonal statistics
+    stats = zonal_stats(dist_vector, raster_file, stats=["mean", "min", "max", "std", ], geojson_out=False)
+    
+    # Convert stats to DataFrame
+    stats_df = pd.DataFrame(stats)
+    
+    # Rename columns to include raster name
+    stats_df.columns = [f"{raster_name}_{col}" for col in stats_df.columns]
+    
+    # Merge results
+    for col in stats_df.columns:
+        if 'min' in col:
+            results_min[col] = stats_df[col]
+        if 'max' in col:
+            results_max[col] = stats_df[col]
+        if 'mean' in col:
+            results_mean[col] = stats_df[col]
+        if 'std' in col:
+            results_std[col] = stats_df[col]
+    
+    all_results = pd.concat([all_results, stats_df], axis=1)
+    
+    print(f'{raster_name} done.')
+
+# Save results to a CSV
+all_results.to_csv(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\Zonal stats\zonal_stats_all.csv", index=False)
+results_min.to_csv(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\Zonal stats\zonal_stats_min.csv", index=False)
+results_max.to_csv(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\Zonal stats\zonal_stats_max.csv", index=False)
+results_mean.to_csv(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\Zonal stats\zonal_stats_mean.csv", index=False)
+results_std.to_csv(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\Zonal stats\zonal_stats_std.csv", index=False)
