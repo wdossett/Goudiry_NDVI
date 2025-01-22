@@ -10,12 +10,12 @@ from collections import defaultdict
 from rasterio.io import MemoryFile
 import glob
 from rasterio.merge import merge
-from rasterio.warp import reproject, Resampling
+from rasterio.warp import reproject, Resampling, calculate_default_transform
 from rasterio.fill import fillnodata
 from scipy.spatial import cKDTree
-from rasterstats import zonal_stats
+from rasterstats import zonal_stats, raster_stats
 import pandas as pd
-
+from rasterio.features import geometry_mask
 
 #region Clip Rasters
 
@@ -321,11 +321,11 @@ input_raster_path = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Projec
 output_path = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\NDVI wo clouds"
 counter = 0
 
-testing_subset = {key: value for key, value in ndvi_results.items() if '202403' in key }
+#testing_subset = {key: value for key, value in ndvi_results.items() if '202403' in key }
 #last_8_items = dict(list(ndvi_results.items())[-5:])
 
 #iterate through the NDVI rasters to make them each the right extent
-for result, data in testing_subset.items():
+for result, data in ndvi_results.items():
     #write the NDVI raster to a raster file so we can use rasterio on it
     meta = data['metadata']
     ndvi_processing_data = data['data']
@@ -414,7 +414,53 @@ get_monthly_ndvi(input_folder_path, output_folder)
 
 #endregion
 
+#region clip to remove crop and built-up area
 
+#vectorize raster with crop and built-up area set to 0 - use that as the vector mask
+
+#Load the vector layer and filter 
+land_vector_path = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\terrascope land use\land_use_vector.shp"
+gdf = gpd.read_file(land_vector_path)
+filtered_gdf = gdf[gdf['DN'] == 1]  # Filter polygons where DN = 1
+
+#Extract geometry from the filtered GeoDataFrame
+geometries = filtered_gdf.geometry
+
+
+#iterate through each raster
+raster_folder = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\NDVI monthly averages"
+output_folder = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\NDVI monthly averages no cropland"
+
+for ndvi_path in os.listdir(raster_folder):
+    if ndvi_path.endswith(".TIF"):
+        raster_path = os.path.join(raster_folder, ndvi_path)
+        output_raster_path = os.path.join(output_folder, f"clipped_{ndvi_path}")
+        
+        # Ensure the CRS matches between vector and raster
+        with rasterio.open(raster_path) as src:
+            raster_crs = src.crs
+            if filtered_gdf.crs != raster_crs:
+                filtered_gdf = filtered_gdf.to_crs(raster_crs)
+
+        #Clip the raster using the geometries as mask
+        with rasterio.open(raster_path) as src:
+            out_image, out_transform = mask(src, geometries, crop=True)
+            out_meta = src.meta.copy()
+
+        # update metadata for the output raster
+        out_meta.update({
+            "driver": "GTiff",
+            "height": out_image.shape[1],
+            "width": out_image.shape[2],
+            "transform": out_transform
+        })
+
+        # Write the clipped raster to a new file
+        with rasterio.open(output_raster_path, "w", **out_meta) as dest:
+            dest.write(out_image)
+
+        print(f"Clipped {ndvi_path} raster saved.")
+#endregion
 
 # distance to nearest village
 
@@ -461,56 +507,63 @@ with rasterio.open(
     dst.write(distance_raster, 1)
 #endregion
 
-# use QGIS to reclassify the raster into categories, transform into a polygon vector
-dist_vector = gpd.read_file(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\distance_vector_zones_clipped.shp")
+#create sample points in QGIS, give each a distance value
+
+#create a database of distance values and NDVI values by year and month for analysis
+
+# Path to the folder containing NDVI rasters
+raster_files = glob.glob(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\NDVI monthly averages no cropland\*.TIF")
+
+# Path to the sample points shapefile
+points_path = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\Goudiry_sample_points.shp"
+
+# Load the points as a GeoDataFrame
+points_gdf = gpd.read_file(points_path)
+
+# Create an empty DataFrame to store results
+results = points_gdf.copy()
+# Drop unwanted columns
+results = results.drop(columns=["left", "right", "top", "bottom", "row_index", "col_index", 'geometry'])
+
+# Sample each raster
+for raster_path in raster_files:
+    # Extract the year and month from filename
+    yearmonth = raster_path.split("/")[-1].split("_")[3].split(".")[0]
+    year = yearmonth[0:4]
+    month = yearmonth[4:]
+    year_month = year + "_" + month    
+
+    # Open the raster
+    with rasterio.open(raster_path) as src:
+        # Transform points to the raster's CRS
+        points_gdf = points_gdf.to_crs(src.crs)
+
+        # Extract raster values for each point
+        coords = [(x, y) for x, y in zip(points_gdf.geometry.x, points_gdf.geometry.y)]
+        sampled_values = list(src.sample(coords))
+
+        # Add the sampled values as a new column
+        results[year_month] = [value[0] for value in sampled_values]
 
 
-#region perform zonal statistics
+# Reshape the results DataFrame for easier analysis
+# Convert wide format (Year_Month as columns) to long format
+long_results = pd.melt(
+    frame=results, 
+    id_vars=["id", "Dist_vill", 'geometry'],
+    var_name="Year_Month",
+    value_name="NDVI")
 
-# Path to rasters
-raster_files = glob.glob(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\NDVI monthly averages\*.TIF")
+# Split Year_Month into separate columns
+long_results[["Year", "Month"]] = long_results["Year_Month"].str.split("_", expand=True)
+long_results.drop(columns=["Year_Month"], inplace=True)
+#remove null values
+long_results = long_results[long_results["NDVI"] != -9999]
+long_results.reset_index(drop=True, inplace=True)
 
-# Initialize an empty DataFrame for results
-all_results = dist_vector.copy()
-all_results = all_results.sort_values(by = 'max_dist').reset_index(drop = True)
-all_results = all_results.drop(columns = 'geometry')
-results_min = all_results.copy()
-results_max = all_results.copy()
-results_mean = all_results.copy()
-results_std = all_results.copy()
+# Save the long-format results to a CSV file
+long_results.to_csv(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\ndvi_samples_long.csv", index=False)
 
-
-for raster_file in raster_files:
-    # Extract raster name for column labeling
-    raster_name = raster_file[-10:].replace(".TIF", "")
-    
-    # Calculate zonal statistics
-    stats = zonal_stats(dist_vector, raster_file, stats=["mean", "min", "max", "std", ], geojson_out=False)
-    
-    # Convert stats to DataFrame
-    stats_df = pd.DataFrame(stats)
-    
-    # Rename columns to include raster name
-    stats_df.columns = [f"{raster_name}_{col}" for col in stats_df.columns]
-    
-    # Merge results
-    for col in stats_df.columns:
-        if 'min' in col:
-            results_min[col] = stats_df[col]
-        if 'max' in col:
-            results_max[col] = stats_df[col]
-        if 'mean' in col:
-            results_mean[col] = stats_df[col]
-        if 'std' in col:
-            results_std[col] = stats_df[col]
-    
-    all_results = pd.concat([all_results, stats_df], axis=1)
-    
-    print(f'{raster_name} done.')
-
-# Save results to a CSV
-all_results.to_csv(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\Zonal stats\zonal_stats_all.csv", index=False)
-results_min.to_csv(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\Zonal stats\zonal_stats_min.csv", index=False)
-results_max.to_csv(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\Zonal stats\zonal_stats_max.csv", index=False)
-results_mean.to_csv(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\Zonal stats\zonal_stats_mean.csv", index=False)
-results_std.to_csv(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\Zonal stats\zonal_stats_std.csv", index=False)
+#filter out every other point to reduce size
+filtered_results = long_results[long_results["id"] % 2 == 0]
+filtered_results.to_csv(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\ndvi_samples_long_filtered.csv", index=False)
