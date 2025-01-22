@@ -464,49 +464,6 @@ for ndvi_path in os.listdir(raster_folder):
 
 # distance to nearest village
 
-#region create distance raster
-# Load the vector file (villages)
-villages = gpd.read_file(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\Goudiry_villages.shp")
-
-# Load the blank raster file to use as template
-raster = rasterio.open(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\Goudiry_empty.TIF")
-
-# Reproject villages to match raster CRS
-villages = villages.to_crs(raster.crs)
-
-# Extract village coordinates
-village_coords = [(x, y) for x, y in zip(villages.geometry.x, villages.geometry.y)]
-
-# Create a grid of pixel center coordinates
-rows, cols = np.indices((raster.height, raster.width))
-x, y = raster.xy(rows.flatten(), cols.flatten())
-pixel_coords = np.column_stack([x, y])
-
-# Use KDTree for fast nearest-neighbor search
-tree = cKDTree(village_coords)
-distances, _ = tree.query(pixel_coords)
-
-# Reshape the distances to match the raster shape
-distance_raster = distances.reshape(raster.height, raster.width)
-
-# Save the distance raster
-output_file = r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\distance_raster.TIF"
-transform = raster.transform
-
-with rasterio.open(
-    output_file,
-    'w',
-    driver='GTiff',
-    height=distance_raster.shape[0],
-    width=distance_raster.shape[1],
-    count=1,
-    dtype=distance_raster.dtype,
-    crs=raster.crs,
-    transform=transform,
-) as dst:
-    dst.write(distance_raster, 1)
-#endregion
-
 #create sample points in QGIS, give each a distance value
 
 #create a database of distance values and NDVI values by year and month for analysis
@@ -564,6 +521,6 @@ long_results.reset_index(drop=True, inplace=True)
 # Save the long-format results to a CSV file
 long_results.to_csv(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\ndvi_samples_long.csv", index=False)
 
-#filter out every other point to reduce size
+#filter out every other point to reduce size if necessary
 filtered_results = long_results[long_results["id"] % 2 == 0]
 filtered_results.to_csv(r"C:\Users\user\Documents\Padova\GIS Applications\Lab Project\ndvi_samples_long_filtered.csv", index=False)
